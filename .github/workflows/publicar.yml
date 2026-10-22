@@ -1,0 +1,30 @@
+name: Publicar reel
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python post_reel.py
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      - name: Guardar la cola actualizada
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add posts.json posts_publicados.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "Reel publicado" && git push)
