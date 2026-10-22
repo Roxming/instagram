@@ -47,10 +47,31 @@ def main():
     post = queue[0]
     dia = len(done) + 1
     caption = post.get("caption", "").replace("{dia}", str(dia))
-    url = post.get("video_url") or video_url(post["video"])
-    print(f"Publicando {url}")
-    cid = api("POST", f"{USER_ID}/media", media_type="REELS", video_url=url,
-              caption=caption, share_to_feed="true")["id"]
+
+    if post.get("video_url"):
+        # Opción con URL pública
+        print(f"Publicando desde URL {post['video_url']}")
+        cid = api("POST", f"{USER_ID}/media", media_type="REELS", video_url=post["video_url"],
+                  caption=caption, share_to_feed="true")["id"]
+    else:
+        # Subida directa del archivo a Instagram (no depende de GitHub Pages)
+        video = BASE / post["video"]
+        size = video.stat().st_size
+        print(f"Subiendo {video.name} ({size / 1e6:.1f} MB) directamente a Instagram")
+        container = api("POST", f"{USER_ID}/media", media_type="REELS", upload_type="resumable",
+                        caption=caption, share_to_feed="true")
+        cid = container["id"]
+        upload_uri = container.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v21.0/{cid}"
+        with open(video, "rb") as f:
+            r = requests.post(upload_uri, data=f, timeout=600, headers={
+                "Authorization": f"OAuth {TOKEN}",
+                "offset": "0",
+                "file_size": str(size),
+            })
+        print(f"Respuesta de la subida: {r.status_code} {r.text[:300]}")
+        if r.status_code != 200:
+            sys.exit("Falló la subida del video")
+
     for _ in range(60):
         status = api("GET", cid, fields="status_code,status")
         if status.get("status_code") == "FINISHED": break
