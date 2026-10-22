@@ -10,7 +10,7 @@ import requests
 
 BASE = Path(__file__).resolve().parent
 QUEUE, DONE = BASE / "posts.json", BASE / "posts_publicados.json"
-API = os.environ.get("IG_API_BASE", "https://graph.instagram.com/v21.0")
+API = os.environ.get("IG_API_BASE") or "https://graph.instagram.com/v24.0"
 USER_ID, TOKEN = os.environ.get("IG_USER_ID"), os.environ.get("IG_ACCESS_TOKEN")
 MANUAL = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 now = datetime.now(ZoneInfo("Europe/Madrid"))
@@ -48,34 +48,42 @@ def main():
     dia = len(done) + 1
     caption = post.get("caption", "").replace("{dia}", str(dia))
 
-    if post.get("video_url"):
-        # Opción con URL pública
-        print(f"Publicando desde URL {post['video_url']}")
-        cid = api("POST", f"{USER_ID}/media", media_type="REELS", video_url=post["video_url"],
-                  caption=caption, share_to_feed="true")["id"]
-    else:
-        # Subida directa del archivo a Instagram (no depende de GitHub Pages)
-        video = BASE / post["video"]
+    cid = None
+    video = BASE / post["video"] if post.get("video") else None
+
+    # 1) Intento de subida directa del archivo (no depende de enlaces públicos)
+    if video and not post.get("video_url"):
         size = video.stat().st_size
         print(f"Subiendo {video.name} ({size / 1e6:.1f} MB) directamente a Instagram")
-        container = api("POST", f"{USER_ID}/media", media_type="REELS", upload_type="resumable",
-                        caption=caption, share_to_feed="true")
-        cid = container["id"]
-        upload_uri = container.get("uri") or f"https://rupload.facebook.com/ig-api-upload/v21.0/{cid}"
-        with open(video, "rb") as f:
-            r = requests.post(upload_uri, data=f, timeout=600, headers={
-                "Authorization": f"OAuth {TOKEN}",
-                "offset": "0",
-                "file_size": str(size),
-            })
-        print(f"Respuesta de la subida: {r.status_code} {r.text[:300]}")
-        if r.status_code != 200:
-            sys.exit("Falló la subida del video")
+        r = requests.post(f"{API}/{USER_ID}/media", timeout=120,
+                          headers={"Authorization": f"Bearer {TOKEN}"},
+                          json={"media_type": "REELS", "upload_type": "resumable",
+                                "caption": caption, "share_to_feed": True})
+        data = r.json()
+        if r.status_code == 200 and "id" in data:
+            cid = data["id"]
+            upload_uri = data.get("uri") or f"https://rupload.facebook.com/ig-api-upload/{API.rsplit('/', 1)[-1]}/{cid}"
+            with open(video, "rb") as f:
+                up = requests.post(upload_uri, data=f, timeout=600, headers={
+                    "Authorization": f"OAuth {TOKEN}", "offset": "0", "file_size": str(size)})
+            print(f"Respuesta de la subida: {up.status_code} {up.text[:300]}")
+            if up.status_code != 200:
+                cid = None
+        else:
+            print(f"La subida directa no está disponible: {data}")
+
+    # 2) Plan B: que Instagram descargue el video desde GitHub Pages
+    if cid is None:
+        url = post.get("video_url") or video_url(post["video"])
+        print(f"Publicando desde URL {url}")
+        cid = api("POST", f"{USER_ID}/media", media_type="REELS", video_url=url,
+                  caption=caption, share_to_feed="true")["id"]
 
     for _ in range(60):
         status = api("GET", cid, fields="status_code,status")
         if status.get("status_code") == "FINISHED": break
         if status.get("status_code") in ("ERROR", "EXPIRED"):
+            print(f"Detalle completo: {api('GET', cid, fields='status_code,status,id')}")
             sys.exit(f"Instagram no pudo procesar el video: {status}")
         time.sleep(10)
     else:
